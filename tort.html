@@ -1,0 +1,908 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>3D Конструктор еды</title>
+<style>
+  * { box-sizing: border-box; user-select: none; }
+  html, body { margin: 0; height: 100%; overflow: hidden;
+    font-family: 'Segoe UI', Arial, sans-serif;
+    background: linear-gradient(160deg, #fff0f5, #ffe4ec 60%, #ffd6e7);
+    color: #8a4b63; }
+  #app { display: flex; height: 100%; }
+  #scene { flex: 1; position: relative; }
+  #scene canvas { display: block; }
+
+  #modes {
+    position: absolute; top: 12px; left: 12px; z-index: 10;
+    display: flex; gap: 8px; flex-wrap: wrap;
+  }
+  .mode-btn {
+    width: 54px; height: 54px; border-radius: 14px; border: 2px solid #ffc2d6;
+    background: rgba(255,255,255,.85); font-size: 26px; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 2px 6px rgba(200,120,150,.25); transition: transform .15s, border-color .15s;
+  }
+  .mode-btn:hover { transform: translateY(-2px); }
+  .mode-btn.active { border-color: #ff6fa8; background: #ffe4ec; transform: scale(1.05); }
+
+  #menu {
+    width: 300px; background: rgba(255,255,255,0.82);
+    backdrop-filter: blur(8px);
+    border-left: 2px solid #ffc2d6;
+    padding: 14px; overflow-y: auto;
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  #menu h2 { margin: 0 0 4px; font-size: 18px; text-align: center; color: #d46a8f; }
+  .group-title { font-size: 12px; font-weight: 700; color: #b85c7d;
+    margin-top: 10px; text-transform: uppercase; letter-spacing: .5px; }
+  .items { display: flex; flex-wrap: wrap; gap: 8px; }
+
+  .item { width: 58px; height: 58px; border-radius: 12px; background: #fff;
+    box-shadow: 0 2px 6px rgba(200,120,150,.25);
+    display: flex; align-items: center; justify-content: center;
+    cursor: grab; touch-action: none; transition: transform .15s; font-size: 30px; }
+  .item:hover { transform: translateY(-2px); }
+  .item:active { cursor: grabbing; transform: scale(.95); }
+
+  #hint { position: absolute; top: 14px; left: 50%; transform: translateX(-50%);
+    font-size: 14px; color:#b85c7d; background: rgba(255,255,255,.75);
+    padding: 6px 14px; border-radius: 20px; white-space: nowrap; pointer-events: none;
+    text-align: center; }
+
+  #readyBtn { margin-top: auto; padding: 12px; border: none; border-radius: 12px;
+    background: #ff9ec4; color: #fff; font-size: 16px; font-weight: 700; cursor: pointer; }
+  #readyBtn:hover { background: #ff86b5; }
+  #readyBtn:disabled { background: #e7c3d2; cursor: default; }
+
+  #resetBtn { padding: 10px; border: none; border-radius: 12px;
+    background: #fff0f5; color: #b85c7d; font-size: 14px; font-weight: 600;
+    cursor: pointer; border: 2px solid #ffc2d6; }
+  #resetBtn:hover { background: #ffe4ec; }
+
+  #error {
+    position: absolute; inset: 0; display: none;
+    align-items: center; justify-content: center;
+    text-align: center; padding: 20px; font-size: 15px; color: #b03060;
+    background: rgba(255,255,255,.9);
+  }
+
+  @media (max-width: 700px) {
+    #app { flex-direction: column; }
+    #menu { width: 100%; height: 44%; border-left: none; border-top: 2px solid #ffc2d6; }
+    #scene { height: 56%; }
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="scene">
+    <div id="modes">
+      <button class="mode-btn active" data-mode="cake" title="Торт">🍰</button>
+      <button class="mode-btn" data-mode="burger" title="Бургер">🍔</button>
+      <button class="mode-btn" data-mode="pizza" title="Пицца">🍕</button>
+      <button class="mode-btn" data-mode="cupcake" title="Кекс">🧁</button>
+    </div>
+    <div id="hint">Перетащи ингредиенты на основу.<br>Потом нажми «Готово» — придёт зверёк 🐾</div>
+    <div id="error">
+      Не удалось загрузить 3D (Three.js).<br>
+      Проверьте интернет и откройте файл в свежем Chrome/Edge.
+    </div>
+  </div>
+  <div id="menu">
+    <h2 id="menuTitle">Торт</h2>
+    <div id="menuContent"></div>
+    <button id="readyBtn">Готово 🐾</button>
+    <button id="resetBtn">Начать заново</button>
+  </div>
+</div>
+
+<script type="importmap">
+{ "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+</script>
+
+<script type="module">
+let THREE;
+try {
+  THREE = await import('three');
+} catch (err) {
+  document.getElementById('error').style.display = 'flex';
+  document.getElementById('hint').style.display = 'none';
+  console.error('Three.js не загрузился:', err);
+  throw err;
+}
+
+// ---------- Сцена ----------
+const sceneHost = document.getElementById('scene');
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+renderer.shadowMap.enabled = false;
+sceneHost.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color('#ffeef4');
+
+const camera = new THREE.PerspectiveCamera(35, 1, 0.1, 100);
+camera.position.set(6.5, 7.5, 9.5);
+camera.lookAt(0, 1.2, 0);
+
+scene.add(new THREE.HemisphereLight(0xffffff, 0xffd6e7, 1.15));
+const dir = new THREE.DirectionalLight(0xffffff, 1.0);
+dir.position.set(5, 10, 6);
+scene.add(dir);
+const fill = new THREE.DirectionalLight(0xffd6e7, 0.5);
+fill.position.set(-6, 4, -5);
+scene.add(fill);
+
+// ---------- Тарелка ----------
+const plate = new THREE.Mesh(
+  new THREE.CylinderGeometry(3.5, 3.5, 0.28, 48),
+  new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.3 })
+);
+plate.position.y = 0.14;
+scene.add(plate);
+const plateRing = new THREE.Mesh(
+  new THREE.TorusGeometry(3.35, 0.09, 12, 48),
+  new THREE.MeshStandardMaterial({ color: 0xffc2d6, roughness: 0.4 })
+);
+plateRing.rotation.x = Math.PI / 2;
+plateRing.position.y = 0.3;
+scene.add(plateRing);
+
+// ---------- Группы ----------
+const foodGroup = new THREE.Group();
+scene.add(foodGroup);
+const decoGroup = new THREE.Group();
+scene.add(decoGroup);
+
+// ---------- Утилиты ----------
+function lighten(hex, amt) {
+  const c = new THREE.Color(hex);
+  c.lerp(new THREE.Color(0xffffff), amt);
+  return '#' + c.getHexString();
+}
+function clampRadius(x, z, max) {
+  const r = Math.hypot(x, z);
+  if (r > max) { const k = max / r; return [x*k, z*k]; }
+  return [x, z];
+}
+
+// ============================================================
+//  РЕЖИМ: ТОРТ
+// ============================================================
+const cake = {
+  stackTop: 0.35, radius: 2.4, layerH: 0.55,
+  addBase(color) {
+    const g = new THREE.Group();
+    const body = new THREE.Mesh(
+      new THREE.CylinderGeometry(this.radius, this.radius, this.layerH, 40),
+      new THREE.MeshStandardMaterial({ color: new THREE.Color(color || '#e9c07a'), roughness: 0.62 })
+    );
+    body.position.y = this.layerH / 2;
+    g.add(body);
+    const cream = new THREE.Mesh(
+      new THREE.TorusGeometry(this.radius - 0.02, 0.12, 8, 40),
+      new THREE.MeshStandardMaterial({ color: new THREE.Color(lighten(color || '#e9c07a', 0.28)), roughness: 0.5 })
+    );
+    cream.rotation.x = Math.PI / 2;
+    cream.position.y = this.layerH - 0.02;
+    g.add(cream);
+    g.position.y = this.stackTop;
+    foodGroup.add(g);
+    this.stackTop += this.layerH + 0.04;
+    for (const c of decoGroup.children) c.position.y = this.stackTop;
+  },
+  addLayer(color) { this.addBase(color); },
+  addFoam(x, z, color) {
+    const g = new THREE.Group();
+    const mat = new THREE.MeshStandardMaterial({ color: new THREE.Color(color), roughness: 0.85 });
+    [[0,0.12,0,0.32],[0.2,0.1,0.1,0.22],[-0.18,0.1,0.08,0.2],[0.05,0.22,-0.1,0.2],[-0.05,0.2,0.15,0.18]]
+      .forEach(([bx,by,bz,r]) => {
+        const b = new THREE.Mesh(new THREE.SphereGeometry(r, 10, 8), mat);
+        b.position.set(bx, by, bz); g.add(b);
+      });
+    const [cx, cz] = clampRadius(x, z, this.radius - 0.35);
+    g.position.set(cx, this.stackTop, cz);
+    decoGroup.add(g);
+  },
+  addBerry(x, z, color) {
+    const g = new THREE.Group();
+    const body = new THREE.Mesh(
+      new THREE.SphereGeometry(0.24, 14, 12),
+      new THREE.MeshStandardMaterial({ color: new THREE.Color(color), roughness: 0.35 })
+    );
+    body.position.y = 0.24; g.add(body);
+    const leaf = new THREE.Mesh(
+      new THREE.ConeGeometry(0.1, 0.12, 6),
+      new THREE.MeshStandardMaterial({ color: 0x6bbf6b, roughness: 0.5 })
+    );
+    leaf.position.y = 0.46; g.add(leaf);
+    const [cx, cz] = clampRadius(x, z, this.radius - 0.35);
+    g.position.set(cx, this.stackTop, cz);
+    decoGroup.add(g);
+  },
+  addMarshmallow(x, z, color) {
+    const g = new THREE.Group();
+    const body = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.24, 0.24, 0.42, 14),
+      new THREE.MeshStandardMaterial({ color: new THREE.Color(color), roughness: 0.72 })
+    );
+    body.position.y = 0.21; g.add(body);
+    const [cx, cz] = clampRadius(x, z, this.radius - 0.35);
+    g.position.set(cx, this.stackTop, cz);
+    decoGroup.add(g);
+  }
+};
+
+// ============================================================
+//  РЕЖИМ: БУРГЕР
+// ============================================================
+const burger = {
+  stackTop: 0.35, radius: 1.6,
+  addBunBottom(x, z) {
+    const g = new THREE.Group();
+    const bun = new THREE.Mesh(
+      new THREE.CylinderGeometry(this.radius, this.radius - 0.1, 0.45, 40),
+      new THREE.MeshStandardMaterial({ color: 0xd9a05b, roughness: 0.75 })
+    );
+    bun.position.y = 0.22; g.add(bun);
+    const seedMat = new THREE.MeshStandardMaterial({ color: 0xfff3d6, roughness: 0.5 });
+    for (let i = 0; i < 14; i++) {
+      const a = Math.random() * Math.PI * 2, r = Math.random() * 1.2;
+      const seed = new THREE.Mesh(new THREE.SphereGeometry(0.045, 6, 4), seedMat);
+      seed.position.set(Math.cos(a)*r, 0.44, Math.sin(a)*r);
+      seed.scale.set(1.4, 0.6, 0.8); g.add(seed);
+    }
+    g.position.y = this.stackTop;
+    foodGroup.add(g);
+    this.stackTop += 0.45;
+  },
+  addBunTop(x, z) {
+    const g = new THREE.Group();
+    const bun = new THREE.Mesh(
+      new THREE.SphereGeometry(this.radius, 32, 16, 0, Math.PI*2, 0, Math.PI/2),
+      new THREE.MeshStandardMaterial({ color: 0xd9a05b, roughness: 0.75 })
+    );
+    bun.scale.y = 0.55; g.add(bun);
+    const seedMat = new THREE.MeshStandardMaterial({ color: 0xfff3d6, roughness: 0.5 });
+    for (let i = 0; i < 22; i++) {
+      const a = Math.random() * Math.PI * 2, r = Math.random() * 1.35;
+      const y = Math.sqrt(Math.max(0, 1 - (r/1.6)**2)) * 1.6 * 0.55;
+      const seed = new THREE.Mesh(new THREE.SphereGeometry(0.05, 6, 4), seedMat);
+      seed.position.set(Math.cos(a)*r, y+0.02, Math.sin(a)*r);
+      seed.scale.set(1.4, 0.6, 0.8); g.add(seed);
+    }
+    g.position.y = this.stackTop;
+    foodGroup.add(g);
+    this.stackTop += 0.5;
+  },
+  addSausage(x, z) {
+    const g = new THREE.Group();
+    const meat = new THREE.Mesh(
+      new THREE.CylinderGeometry(this.radius - 0.1, this.radius - 0.1, 0.22, 40),
+      new THREE.MeshStandardMaterial({ color: 0xd06a5a, roughness: 0.6 })
+    );
+    meat.position.y = 0.11; g.add(meat);
+    const fatMat = new THREE.MeshStandardMaterial({ color: 0xffe9d6, roughness: 0.5 });
+    for (let i = 0; i < 18; i++) {
+      const a = Math.random()*Math.PI*2, r = Math.random()*1.3;
+      const fat = new THREE.Mesh(new THREE.SphereGeometry(0.06, 6, 4), fatMat);
+      fat.position.set(Math.cos(a)*r, 0.22, Math.sin(a)*r); g.add(fat);
+    }
+    g.position.y = this.stackTop;
+    foodGroup.add(g);
+    this.stackTop += 0.22;
+  },
+  addCheese(x, z) {
+    const g = new THREE.Group();
+    const shape = new THREE.Shape();
+    const s = 1.55;
+    shape.moveTo(-s,-s); shape.lineTo(s,-s); shape.lineTo(s,s); shape.lineTo(-s,s); shape.lineTo(-s,-s);
+    const geo = new THREE.ExtrudeGeometry(shape, { depth: 0.1, bevelEnabled: false });
+    const cheese = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: 0xffc93c, roughness: 0.4 }));
+    cheese.rotation.x = -Math.PI/2; cheese.position.y = 0.1; g.add(cheese);
+    const holeMat = new THREE.MeshStandardMaterial({ color: 0xe0a800, roughness: 0.5 });
+    for (let i = 0; i < 10; i++) {
+      const hole = new THREE.Mesh(new THREE.SphereGeometry(0.08, 8, 6), holeMat);
+      hole.position.set((Math.random()-0.5)*2.4, 0.1, (Math.random()-0.5)*2.4);
+      hole.scale.y = 0.3; g.add(hole);
+    }
+    g.position.y = this.stackTop;
+    foodGroup.add(g);
+    this.stackTop += 0.1;
+  },
+  addPatty(x, z) {
+    const g = new THREE.Group();
+    const patty = new THREE.Mesh(
+      new THREE.CylinderGeometry(this.radius, this.radius, 0.32, 40),
+      new THREE.MeshStandardMaterial({ color: 0x6b3a24, roughness: 0.85 })
+    );
+    patty.position.y = 0.16; g.add(patty);
+    const edge = new THREE.Mesh(
+      new THREE.TorusGeometry(this.radius - 0.05, 0.08, 8, 40),
+      new THREE.MeshStandardMaterial({ color: 0x4a2616, roughness: 0.9 })
+    );
+    edge.rotation.x = Math.PI/2; edge.position.y = 0.16; g.add(edge);
+    g.position.y = this.stackTop;
+    foodGroup.add(g);
+    this.stackTop += 0.32;
+  },
+  addLettuce(x, z) {
+    const g = new THREE.Group();
+    const leafMat = new THREE.MeshStandardMaterial({ color: 0x5cbf4a, roughness: 0.7 });
+    for (let i = 0; i < 7; i++) {
+      const a = (i/7)*Math.PI*2;
+      const leaf = new THREE.Mesh(new THREE.SphereGeometry(0.7, 12, 8), leafMat);
+      leaf.scale.set(1, 0.18, 0.7);
+      leaf.position.set(Math.cos(a)*0.9, 0.08, Math.sin(a)*0.9);
+      leaf.rotation.y = -a; g.add(leaf);
+    }
+    g.position.y = this.stackTop;
+    foodGroup.add(g);
+    this.stackTop += 0.16;
+  },
+  addKetchup(x, z) {
+    const g = new THREE.Group();
+    const ket = new THREE.Mesh(
+      new THREE.CylinderGeometry(this.radius - 0.3, this.radius - 0.3, 0.08, 32),
+      new THREE.MeshStandardMaterial({ color: 0xc0202a, roughness: 0.3 })
+    );
+    ket.position.y = 0.04; g.add(ket);
+    g.position.y = this.stackTop;
+    foodGroup.add(g);
+    this.stackTop += 0.08;
+  }
+};
+
+// ============================================================
+//  РЕЖИМ: ПИЦЦА
+// ============================================================
+const pizza = {
+  stackTop: 0.6, radius: 2.4,
+  addBase() {
+    const g = new THREE.Group();
+    const dough = new THREE.Mesh(
+      new THREE.CylinderGeometry(this.radius, this.radius, 0.25, 48),
+      new THREE.MeshStandardMaterial({ color: 0xe8b878, roughness: 0.8 })
+    );
+    dough.position.y = 0.125; g.add(dough);
+    const crust = new THREE.Mesh(
+      new THREE.TorusGeometry(this.radius - 0.1, 0.2, 10, 48),
+      new THREE.MeshStandardMaterial({ color: 0xc98a4b, roughness: 0.8 })
+    );
+    crust.rotation.x = Math.PI/2; crust.position.y = 0.25; g.add(crust);
+    g.position.y = 0.35;
+    foodGroup.add(g);
+    this.stackTop = 0.6;
+  },
+  addSausage(x, z) {
+    const g = new THREE.Group();
+    const s = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.28, 0.28, 0.14, 16),
+      new THREE.MeshStandardMaterial({ color: 0xd06a5a, roughness: 0.6 })
+    );
+    s.position.y = 0.07; g.add(s);
+    const [cx, cz] = clampRadius(x, z, this.radius - 0.4);
+    g.position.set(cx, this.stackTop, cz);
+    foodGroup.add(g);
+  },
+  addCheese(x, z) {
+    const g = new THREE.Group();
+    const geo = new THREE.BoxGeometry(0.7, 0.12, 0.7);
+    const cheese = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: 0xffc93c, roughness: 0.4 }));
+    cheese.position.y = 0.06; g.add(cheese);
+    const [cx, cz] = clampRadius(x, z, this.radius - 0.4);
+    g.position.set(cx, this.stackTop, cz);
+    g.rotation.y = Math.random()*Math.PI;
+    foodGroup.add(g);
+  },
+  addMushroom(x, z) {
+    const g = new THREE.Group();
+    const stem = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.12, 0.14, 0.15, 10),
+      new THREE.MeshStandardMaterial({ color: 0xf0e0c0, roughness: 0.7 })
+    );
+    stem.position.y = 0.075; g.add(stem);
+    const cap = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.32, 0.32, 0.08, 16),
+      new THREE.MeshStandardMaterial({ color: 0xa87a5a, roughness: 0.7 })
+    );
+    cap.position.y = 0.18; g.add(cap);
+    const [cx, cz] = clampRadius(x, z, this.radius - 0.4);
+    g.position.set(cx, this.stackTop, cz);
+    foodGroup.add(g);
+  },
+  addFish(x, z) {
+    const g = new THREE.Group();
+    const body = new THREE.Mesh(
+      new THREE.SphereGeometry(0.22, 12, 8),
+      new THREE.MeshStandardMaterial({ color: 0xf5b8c4, roughness: 0.5 })
+    );
+    body.scale.set(1.6, 0.5, 0.8); body.position.y = 0.1; g.add(body);
+    const tail = new THREE.Mesh(
+      new THREE.ConeGeometry(0.12, 0.2, 8),
+      new THREE.MeshStandardMaterial({ color: 0xf5b8c4, roughness: 0.5 })
+    );
+    tail.rotation.z = Math.PI/2; tail.position.set(0.38, 0.1, 0); g.add(tail);
+    const [cx, cz] = clampRadius(x, z, this.radius - 0.4);
+    g.position.set(cx, this.stackTop, cz);
+    g.rotation.y = Math.random()*Math.PI*2;
+    foodGroup.add(g);
+  },
+  addShrimp(x, z) {
+    const g = new THREE.Group();
+    const body = new THREE.Mesh(
+      new THREE.TorusGeometry(0.18, 0.07, 8, 16, Math.PI*1.5),
+      new THREE.MeshStandardMaterial({ color: 0xff8a6a, roughness: 0.4 })
+    );
+    body.rotation.x = Math.PI/2; body.position.y = 0.1; g.add(body);
+    const [cx, cz] = clampRadius(x, z, this.radius - 0.4);
+    g.position.set(cx, this.stackTop, cz);
+    foodGroup.add(g);
+  }
+};
+
+// ============================================================
+//  РЕЖИМ: КЕКС
+// ============================================================
+const cupcake = {
+  stackTop: 1.3, radius: 1.5, baseColor: '#f0d0a0',
+  addBase(color, x, z) {
+    this.baseColor = color || this.baseColor;
+    const g = new THREE.Group();
+    const wrapper = new THREE.Mesh(
+      new THREE.CylinderGeometry(this.radius, this.radius - 0.4, 0.9, 32, 1, true),
+      new THREE.MeshStandardMaterial({ color: 0xffd6e7, roughness: 0.6, side: THREE.DoubleSide })
+    );
+    wrapper.position.y = 0.45; g.add(wrapper);
+    const cake = new THREE.Mesh(
+      new THREE.CylinderGeometry(this.radius - 0.05, this.radius - 0.4, 0.9, 32),
+      new THREE.MeshStandardMaterial({ color: this.baseColor, roughness: 0.8 })
+    );
+    cake.position.y = 0.45; g.add(cake);
+    const top = new THREE.Mesh(
+      new THREE.SphereGeometry(this.radius - 0.05, 32, 16, 0, Math.PI*2, 0, Math.PI/2),
+      new THREE.MeshStandardMaterial({ color: lighten(this.baseColor, 0.25), roughness: 0.75 })
+    );
+    top.scale.y = 0.4; top.position.y = 0.9; g.add(top);
+    g.position.y = 0.35;
+    foodGroup.add(g);
+    this.stackTop = 1.3;
+  },
+  addPowder(x, z) {
+    const g = new THREE.Group();
+    const mat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.95 });
+    for (let i = 0; i < 12; i++) {
+      const a = Math.random()*Math.PI*2, r = Math.random()*1.2;
+      const b = new THREE.Mesh(new THREE.SphereGeometry(0.08, 8, 6), mat);
+      b.position.set(Math.cos(a)*r, 0.05 + Math.random()*0.1, Math.sin(a)*r); g.add(b);
+    }
+    const [cx, cz] = clampRadius(x, z, this.radius - 0.3);
+    g.position.set(cx, this.stackTop, cz);
+    decoGroup.add(g);
+  },
+  addBerry(x, z, color) {
+    const g = new THREE.Group();
+    const body = new THREE.Mesh(
+      new THREE.SphereGeometry(0.22, 14, 12),
+      new THREE.MeshStandardMaterial({ color: new THREE.Color(color), roughness: 0.35 })
+    );
+    body.position.y = 0.22; g.add(body);
+    const leaf = new THREE.Mesh(
+      new THREE.ConeGeometry(0.08, 0.1, 6),
+      new THREE.MeshStandardMaterial({ color: 0x6bbf6b, roughness: 0.5 })
+    );
+    leaf.position.y = 0.42; g.add(leaf);
+    const [cx, cz] = clampRadius(x, z, this.radius - 0.3);
+    g.position.set(cx, this.stackTop, cz);
+    decoGroup.add(g);
+  }
+};
+
+// ============================================================
+//  ЖИВОТНЫЕ
+// ============================================================
+const animals = {};
+
+function buildCat() {
+  const g = new THREE.Group();
+  const bodyMat = new THREE.MeshStandardMaterial({ color: 0xffd9c4, roughness: 0.6 });
+  const darkMat = new THREE.MeshStandardMaterial({ color: 0xf0b89c, roughness: 0.6 });
+  const eyeMat = new THREE.MeshStandardMaterial({ color: 0x2b2b2b, roughness: 0.2 });
+  const body = new THREE.Mesh(new THREE.SphereGeometry(0.75, 18, 14), bodyMat);
+  body.scale.set(1, 1.1, 1.2); body.position.y = 0.85; g.add(body);
+  const head = new THREE.Group(); head.position.set(0, 1.55, 0.45); g.add(head);
+  head.add(new THREE.Mesh(new THREE.SphereGeometry(0.5, 18, 14), bodyMat));
+  [-1,1].forEach(s => {
+    const ear = new THREE.Mesh(new THREE.ConeGeometry(0.18, 0.35, 10), darkMat);
+    ear.position.set(s*0.28, 0.42, 0); head.add(ear);
+    const eye = new THREE.Mesh(new THREE.SphereGeometry(0.08, 8, 6), eyeMat);
+    eye.position.set(s*0.18, 0.05, 0.44); head.add(eye);
+  });
+  const nose = new THREE.Mesh(new THREE.ConeGeometry(0.06, 0.1, 8),
+    new THREE.MeshStandardMaterial({ color: 0xff9eb5, roughness: 0.3 }));
+  nose.rotation.x = Math.PI/2; nose.position.set(0, -0.05, 0.5); head.add(nose);
+  const tail = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.04, 1.0, 8), darkMat);
+  tail.position.set(0, 0.9, -0.9); tail.rotation.x = -0.9; g.add(tail);
+  [-1,1].forEach(s => {
+    const paw = new THREE.Mesh(new THREE.SphereGeometry(0.2, 10, 8), bodyMat);
+    paw.position.set(s*0.35, 0.2, 0.55); g.add(paw);
+  });
+  g.userData.head = head;
+  return g;
+}
+
+function buildDog() {
+  const g = new THREE.Group();
+  const bodyMat = new THREE.MeshStandardMaterial({ color: 0xc98a4b, roughness: 0.7 });
+  const darkMat = new THREE.MeshStandardMaterial({ color: 0x8a5a2b, roughness: 0.7 });
+  const eyeMat = new THREE.MeshStandardMaterial({ color: 0x2b2b2b, roughness: 0.2 });
+  const body = new THREE.Mesh(new THREE.SphereGeometry(0.8, 18, 14), bodyMat);
+  body.scale.set(1.1, 1, 1.3); body.position.y = 0.85; g.add(body);
+  const head = new THREE.Group(); head.position.set(0, 1.5, 0.7); g.add(head);
+  head.add(new THREE.Mesh(new THREE.SphereGeometry(0.5, 18, 14), bodyMat));
+  const snout = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.28, 0.35, 14), darkMat);
+  snout.rotation.x = Math.PI/2; snout.position.set(0, -0.05, 0.45); head.add(snout);
+  [-1,1].forEach(s => {
+    const ear = new THREE.Mesh(new THREE.SphereGeometry(0.2, 10, 8), darkMat);
+    ear.scale.set(0.6, 1.2, 0.4);
+    ear.position.set(s*0.4, 0.25, 0); head.add(ear);
+    const eye = new THREE.Mesh(new THREE.SphereGeometry(0.08, 8, 6), eyeMat);
+    eye.position.set(s*0.18, 0.1, 0.42); head.add(eye);
+  });
+  const tail = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.03, 0.8, 8), darkMat);
+  tail.position.set(0, 1.1, -1.0); tail.rotation.x = -0.6; g.add(tail);
+  [-1,1].forEach(s => {
+    const paw = new THREE.Mesh(new THREE.SphereGeometry(0.22, 10, 8), bodyMat);
+    paw.position.set(s*0.4, 0.22, 0.7); g.add(paw);
+  });
+  g.userData.head = head;
+  return g;
+}
+
+function buildSeagull() {
+  const g = new THREE.Group();
+  const whiteMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.6 });
+  const grayMat = new THREE.MeshStandardMaterial({ color: 0xb0b8c0, roughness: 0.6 });
+  const beakMat = new THREE.MeshStandardMaterial({ color: 0xffb020, roughness: 0.4 });
+  const eyeMat = new THREE.MeshStandardMaterial({ color: 0x2b2b2b, roughness: 0.2 });
+  const body = new THREE.Mesh(new THREE.SphereGeometry(0.7, 18, 14), whiteMat);
+  body.scale.set(1, 0.9, 1.3); body.position.y = 1.0; g.add(body);
+  const head = new THREE.Group(); head.position.set(0, 1.7, 0.5); g.add(head);
+  head.add(new THREE.Mesh(new THREE.SphereGeometry(0.38, 16, 12), whiteMat));
+  const beak = new THREE.Mesh(new THREE.ConeGeometry(0.1, 0.4, 8), beakMat);
+  beak.rotation.x = Math.PI/2; beak.position.set(0, -0.02, 0.4); head.add(beak);
+  [-1,1].forEach(s => {
+    const eye = new THREE.Mesh(new THREE.SphereGeometry(0.06, 8, 6), eyeMat);
+    eye.position.set(s*0.15, 0.1, 0.3); head.add(eye);
+  });
+  [-1,1].forEach(s => {
+    const wing = new THREE.Mesh(new THREE.SphereGeometry(0.6, 12, 8), grayMat);
+    wing.scale.set(0.3, 0.1, 1.2);
+    wing.position.set(s*0.7, 1.1, 0); wing.rotation.z = s*0.2; g.add(wing);
+  });
+  const tail = new THREE.Mesh(new THREE.ConeGeometry(0.3, 0.6, 8), grayMat);
+  tail.rotation.x = Math.PI/2; tail.position.set(0, 1.0, -0.9); g.add(tail);
+  [-1,1].forEach(s => {
+    const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 0.5, 6), beakMat);
+    leg.position.set(s*0.2, 0.4, 0.2); g.add(leg);
+  });
+  g.userData.head = head;
+  return g;
+}
+
+function buildShark() {
+  const g = new THREE.Group();
+  const bodyMat = new THREE.MeshStandardMaterial({ color: 0x7a9cc0, roughness: 0.5 });
+  const bellyMat = new THREE.MeshStandardMaterial({ color: 0xd8e4f0, roughness: 0.6 });
+  const eyeMat = new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 0.2 });
+  const body = new THREE.Mesh(new THREE.SphereGeometry(0.85, 20, 16), bodyMat);
+  body.scale.set(1, 0.8, 1.6); body.position.y = 1.0; g.add(body);
+  const belly = new THREE.Mesh(new THREE.SphereGeometry(0.7, 16, 12), bellyMat);
+  belly.scale.set(0.9, 0.5, 1.4); belly.position.y = 0.7; g.add(belly);
+  const head = new THREE.Group(); head.position.set(0, 1.0, 0.9); g.add(head);
+  const snout = new THREE.Mesh(new THREE.ConeGeometry(0.5, 0.7, 14), bodyMat);
+  snout.rotation.x = -Math.PI/2; snout.position.set(0, 0, 0.3); head.add(snout);
+  const fin = new THREE.Mesh(new THREE.ConeGeometry(0.35, 0.6, 10), bodyMat);
+  fin.position.set(0, 1.55, 0); fin.rotation.x = -0.2; g.add(fin);
+  [-1,1].forEach(s => {
+    const side = new THREE.Mesh(new THREE.ConeGeometry(0.3, 0.6, 8), bodyMat);
+    side.rotation.z = s*Math.PI/2; side.position.set(s*0.8, 0.9, 0.2); g.add(side);
+  });
+  const tail = new THREE.Mesh(new THREE.ConeGeometry(0.5, 0.9, 10), bodyMat);
+  tail.rotation.x = Math.PI/2; tail.position.set(0, 1.0, -1.5); g.add(tail);
+  [-1,1].forEach(s => {
+    const eye = new THREE.Mesh(new THREE.SphereGeometry(0.07, 8, 6), eyeMat);
+    eye.position.set(s*0.25, 0.2, 0.6); head.add(eye);
+  });
+  g.userData.head = head;
+  return g;
+}
+
+animals.cake = buildCat();
+animals.burger = buildDog();
+animals.pizza = buildSeagull();
+animals.cupcake = buildShark();
+Object.values(animals).forEach(a => { a.visible = false; scene.add(a); });
+
+const ANIMAL_START = new THREE.Vector3(10, 0, 2);
+const ANIMAL_NEAR = new THREE.Vector3(3.8, 0, 0.4);
+
+// ============================================================
+//  МЕНЮ
+// ============================================================
+const menuTitle = document.getElementById('menuTitle');
+const menuContent = document.getElementById('menuContent');
+const itemActions = {};
+
+function clearMenu() { menuContent.innerHTML = ''; }
+function addGroup(title) {
+  const d = document.createElement('div');
+  d.className = 'group-title'; d.textContent = title; menuContent.appendChild(d);
+  const box = document.createElement('div'); box.className = 'items'; menuContent.appendChild(box);
+  return box;
+}
+function addItem(box, emoji, action) {
+  const el = document.createElement('div');
+  el.className = 'item'; el.textContent = emoji;
+  el.dataset.actionId = 'a' + Math.random().toString(36).slice(2);
+  itemActions[el.dataset.actionId] = action;
+  el.addEventListener('pointerdown', startDrag);
+  box.appendChild(el);
+}
+
+let currentMode = 'cake';
+let locked = false;
+
+function buildMenu(mode) {
+  clearMenu();
+  if (mode === 'cake') {
+    menuTitle.textContent = 'Торт';
+    let b = addGroup('Слои');
+    ['#ffb3d1','#ffffff','#e3c8ff','#ffd6b3','#c8f0dc','#ff8fb8'].forEach(c =>
+      addItem(b, '🍰', (x,z) => cake.addLayer(c)));
+    b = addGroup('Пенка / крем');
+    ['#fff5fa','#ffc2d6','#f0e6ff'].forEach(c =>
+      addItem(b, '🧴', (x,z) => cake.addFoam(x, z, c)));
+    b = addGroup('Ягоды');
+    ['#e63950','#8e44ad','#e67e22','#2e86de'].forEach(c =>
+      addItem(b, '🍓', (x,z) => cake.addBerry(x, z, c)));
+    b = addGroup('Зефирки');
+    ['#ffffff','#ffd6e7','#e3c8ff'].forEach(c =>
+      addItem(b, '🍬', (x,z) => cake.addMarshmallow(x, z, c)));
+  } else if (mode === 'burger') {
+    menuTitle.textContent = 'Бургер';
+    let b = addGroup('Булочки');
+    addItem(b, '🍞', (x,z) => burger.addBunBottom(x,z));
+    addItem(b, '🥯', (x,z) => burger.addBunTop(x,z));
+    b = addGroup('Начинка');
+    addItem(b, '🥓', (x,z) => burger.addSausage(x,z));
+    addItem(b, '🧀', (x,z) => burger.addCheese(x,z));
+    addItem(b, '🥩', (x,z) => burger.addPatty(x,z));
+    addItem(b, '🥬', (x,z) => burger.addLettuce(x,z));
+    addItem(b, '🍅', (x,z) => burger.addKetchup(x,z));
+  } else if (mode === 'pizza') {
+    menuTitle.textContent = 'Пицца';
+    let b = addGroup('Начинка');
+    addItem(b, '🥓', (x,z) => pizza.addSausage(x,z));
+    addItem(b, '🧀', (x,z) => pizza.addCheese(x,z));
+    addItem(b, '🍄', (x,z) => pizza.addMushroom(x,z));
+    addItem(b, '🐟', (x,z) => pizza.addFish(x,z));
+    addItem(b, '🦐', (x,z) => pizza.addShrimp(x,z));
+  } else if (mode === 'cupcake') {
+    menuTitle.textContent = 'Кекс';
+    let b = addGroup('Основа кекса');
+    addItem(b, '🍫', (x,z) => { resetFood(); cupcake.addBase('#5a3a2a',x,z); });
+    addItem(b, '🍓', (x,z) => { resetFood(); cupcake.addBase('#ffb3d1',x,z); });
+    addItem(b, '🥛', (x,z) => { resetFood(); cupcake.addBase('#f0d0a0',x,z); });
+    b = addGroup('Украшения');
+    addItem(b, '❄️', (x,z) => cupcake.addPowder(x,z));
+    addItem(b, '🍒', (x,z) => cupcake.addBerry(x,z,'#c0202a'));
+    addItem(b, '🍓', (x,z) => cupcake.addBerry(x,z,'#e63950'));
+    addItem(b, '🫐', (x,z) => cupcake.addBerry(x,z,'#8e44ad'));
+  }
+}
+
+// ============================================================
+//  ПЕРЕТАСКИВАНИЕ
+// ============================================================
+let dragging = null;
+let ghostEl = null;
+
+function startDrag(e) {
+  if (locked) return;
+  e.preventDefault();
+  const id = e.currentTarget.dataset.actionId;
+  const action = itemActions[id];
+  if (!action) return;
+  dragging = { action };
+  ghostEl = document.createElement('div');
+  ghostEl.style.cssText = 'position:fixed;pointer-events:none;z-index:9999;width:48px;height:48px;opacity:.85;transform:translate(-50%,-50%);display:flex;align-items:center;justify-content:center;font-size:28px;';
+  ghostEl.textContent = e.currentTarget.textContent;
+  document.body.appendChild(ghostEl);
+  moveGhost(e.clientX, e.clientY);
+  e.currentTarget.setPointerCapture(e.pointerId);
+  e.currentTarget.addEventListener('pointermove', onMove);
+  e.currentTarget.addEventListener('pointerup', onUp);
+  e.currentTarget.addEventListener('pointercancel', onUp);
+  hideHint();
+}
+function moveGhost(x,y){ if(ghostEl){ ghostEl.style.left=x+'px'; ghostEl.style.top=y+'px'; } }
+function onMove(e){ moveGhost(e.clientX, e.clientY); }
+function onUp(e) {
+  const item = e.currentTarget;
+  item.removeEventListener('pointermove', onMove);
+  item.removeEventListener('pointerup', onUp);
+  item.removeEventListener('pointercancel', onUp);
+  if (ghostEl) { ghostEl.remove(); ghostEl = null; }
+  const hit = screenToPlane(e.clientX, e.clientY);
+  if (hit && dragging) dragging.action(hit.x, hit.z);
+  dragging = null;
+}
+
+function currentSurfaceY() {
+  if (currentMode === 'cake') return cake.stackTop;
+  if (currentMode === 'burger') return burger.stackTop;
+  if (currentMode === 'pizza') return pizza.stackTop;
+  return cupcake.stackTop;
+}
+function screenToPlane(clientX, clientY) {
+  const rect = renderer.domElement.getBoundingClientRect();
+  const ndc = new THREE.Vector2(
+    ((clientX - rect.left) / rect.width) * 2 - 1,
+    -((clientY - rect.top) / rect.height) * 2 + 1
+  );
+  const raycaster = new THREE.Raycaster();
+  raycaster.setFromCamera(ndc, camera);
+  const plane = new THREE.Plane(new THREE.Vector3(0,1,0), -currentSurfaceY());
+  const hit = new THREE.Vector3();
+  const ok = raycaster.ray.intersectPlane(plane, hit);
+  if (!ok) return null;
+  return hit;
+}
+
+// ============================================================
+//  СБРОС И РЕЖИМЫ
+// ============================================================
+function resetFood() {
+  while (foodGroup.children.length) foodGroup.remove(foodGroup.children[0]);
+  while (decoGroup.children.length) decoGroup.remove(decoGroup.children[0]);
+  cake.stackTop = 0.35;
+  burger.stackTop = 0.35;
+  pizza.stackTop = 0.6;
+  cupcake.stackTop = 1.3;
+  Object.values(animals).forEach(a => {
+    a.visible = false;
+    a.scale.set(1, 1, 1);          // сброс «толщины»
+    a.userData.fatScale = 1;
+  });
+  animation = null;
+  locked = false;
+  document.getElementById('readyBtn').disabled = false;
+}
+function hideHint(){ document.getElementById('hint').style.display = 'none'; }
+
+function setMode(mode) {
+  currentMode = mode;
+  document.querySelectorAll('.mode-btn').forEach(b =>
+    b.classList.toggle('active', b.dataset.mode === mode));
+  resetFood();
+  buildMenu(mode);
+  if (mode === 'cake') cake.addBase('#e9c07a');
+  else if (mode === 'burger') burger.addBunBottom();
+  else if (mode === 'pizza') pizza.addBase();
+  else if (mode === 'cupcake') cupcake.addBase('#f0d0a0');
+  document.getElementById('hint').innerHTML =
+    'Перетащи ингредиенты на основу.<br>Потом нажми «Готово» — придёт зверёк 🐾';
+  document.getElementById('hint').style.display = 'block';
+}
+
+document.querySelectorAll('.mode-btn').forEach(b => {
+  b.addEventListener('click', () => { if (!locked) setMode(b.dataset.mode); });
+});
+
+// ============================================================
+//  АНИМАЦИЯ ЕДЫ + ТОЛСТЕНИЕ
+// ============================================================
+let animation = null;
+
+function activeAnimal() {
+  if (currentMode === 'cake') return animals.cake;
+  if (currentMode === 'burger') return animals.burger;
+  if (currentMode === 'pizza') return animals.pizza;
+  return animals.cupcake;
+}
+
+function startEating() {
+  if (locked) return;
+  locked = true;
+  document.getElementById('readyBtn').disabled = true;
+  hideHint();
+
+  const animal = activeAnimal();
+  Object.values(animals).forEach(a => a.visible = false);
+  animal.visible = true;
+  animal.position.copy(ANIMAL_START);
+  animal.rotation.y = -Math.PI / 2;
+  animal.scale.set(1, 1, 1);
+  animal.userData.fatScale = 1;
+
+  animation = {
+    t: 0, phase: 'walk', start: performance.now(),
+    eaten: 0, total: foodGroup.children.length, animal
+  };
+}
+function easeInOut(t){ return t < 0.5 ? 2*t*t : 1 - Math.pow(-2*t+2,2)/2; }
+
+function updateAnimation(now) {
+  if (!animation) return;
+  const a = animation;
+  const animal = a.animal;
+  const head = animal.userData.head;
+  a.t = (now - a.start) / 1000;
+
+  // Плавное «толстение» к целевой толщине
+  const targetFat = animal.userData.fatScale ?? 1;
+  const cur = animal.scale.x;
+  const next = cur + (targetFat - cur) * 0.12;
+  animal.scale.set(next, next, next);
+
+  if (a.phase === 'walk') {
+    const k = Math.min(1, a.t / 1.2);
+    animal.position.lerpVectors(ANIMAL_START, ANIMAL_NEAR, easeInOut(k));
+    animal.position.y = Math.abs(Math.sin(now/120)) * 0.08;
+    if (k >= 1) { a.phase = 'eat'; a.start = now; a.t = 0; }
+    return;
+  }
+  if (a.phase === 'eat') {
+    if (head) head.position.y = (head.userData.baseY ?? head.position.y) + Math.sin(now/100)*0.08;
+    const target = Math.floor(a.t / 0.4);
+    while (a.eaten < target && foodGroup.children.length > 0) {
+      foodGroup.remove(foodGroup.children[foodGroup.children.length - 1]);
+      if (decoGroup.children.length > 0) decoGroup.remove(decoGroup.children[0]);
+      a.eaten++;
+      // КАЖДЫЙ УКУС = +7% к размеру
+      animal.userData.fatScale = (animal.userData.fatScale ?? 1) * 1.07;
+    }
+    if (foodGroup.children.length === 0) { a.phase = 'happy'; a.start = now; a.t = 0; }
+    return;
+  }
+  if (a.phase === 'happy') {
+    animal.position.y = Math.abs(Math.sin(now/150)) * 0.35;
+    if (a.t > 2) { animation = null; showDoneMessage(); }
+    return;
+  }
+}
+function showDoneMessage() {
+  const hint = document.getElementById('hint');
+  hint.textContent = 'Зверёк всё съел и потолстел! 🐾 Нажми «Начать заново»';
+  hint.style.display = 'block';
+}
+
+// ---------- Кнопки ----------
+document.getElementById('readyBtn').addEventListener('click', startEating);
+document.getElementById('resetBtn').addEventListener('click', () => { resetFood(); setMode(currentMode); });
+
+// ---------- Ресайз и цикл ----------
+function resize() {
+  const w = sceneHost.clientWidth, h = sceneHost.clientHeight;
+  renderer.setSize(w, h);
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+}
+window.addEventListener('resize', resize);
+resize();
+
+function animate(now) {
+  requestAnimationFrame(animate);
+  updateAnimation(now || performance.now());
+  renderer.render(scene, camera);
+}
+requestAnimationFrame(animate);
+
+// ---------- Старт ----------
+setMode('cake');
+</script>
+</body>
+</html>
